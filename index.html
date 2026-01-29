@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEET CAP PDF Extractor</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<style>
+:root{
+    --primary:#1f3a5f;
+    --secondary:#4b79a1;
+    --bg:#f4f6f8;
+    --card:#ffffff;
+    --success:#2e7d32;
+    --error:#d32f2f;
+    --border:#e0e0e0;
+}
+
+*{
+    box-sizing:border-box;
+    font-family: "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+body{
+    margin:0;
+    background:linear-gradient(135deg,#eef2f7,#f9fbfd);
+    padding:20px;
+}
+
+.container{
+    max-width:1200px;
+    margin:auto;
+}
+
+.header{
+    text-align:center;
+    margin-bottom:20px;
+}
+
+.header h2{
+    margin:0;
+    color:var(--primary);
+    font-weight:600;
+}
+
+.card{
+    background:var(--card);
+    border-radius:12px;
+    box-shadow:0 8px 20px rgba(0,0,0,0.06);
+    padding:20px;
+}
+
+.controls{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+    align-items:center;
+    justify-content:space-between;
+    margin-bottom:15px;
+}
+
+.controls-left{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+}
+
+input[type="file"]{
+    padding:8px;
+    border:1px solid var(--border);
+    border-radius:6px;
+    background:#fff;
+}
+
+button{
+    padding:10px 18px;
+    border:none;
+    border-radius:6px;
+    background:var(--primary);
+    color:#fff;
+    font-size:14px;
+    cursor:pointer;
+    transition:all .25s ease;
+}
+
+button:hover{
+    background:var(--secondary);
+}
+
+button:disabled{
+    background:#9aa9b8;
+    cursor:not-allowed;
+}
+
+.status{
+    margin:10px 0;
+    font-size:14px;
+}
+
+.loading{color:#555}
+.success{color:var(--success);font-weight:600}
+.error{color:var(--error);font-weight:600}
+
+/* ===== Table ===== */
+.table-wrapper{
+    width:100%;
+    overflow-x:auto;
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+    min-width:700px;
+}
+
+th,td{
+    padding:10px 12px;
+    border:1px solid var(--border);
+    font-size:14px;
+    text-align:left;
+}
+
+th{
+    background:var(--primary);
+    color:#fff;
+    position:sticky;
+    top:0;
+    z-index:1;
+}
+
+tr:nth-child(even){
+    background:#f7f9fc;
+}
+
+/* ===== Mobile ===== */
+@media(max-width:768px){
+    .controls{
+        flex-direction:column;
+        align-items:stretch;
+    }
+
+    .controls-left{
+        width:100%;
+    }
+
+    button{
+        width:100%;
+    }
+
+    input[type="file"]{
+        width:100%;
+    }
+
+    .header h2{
+        font-size:20px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="header">
+        <h2>Medical PDF Extractor</h2>
+    </div>
+
+    <div class="card">
+
+        <div class="controls">
+            <div class="controls-left">
+                <input type="file" id="pdfFile" accept="application/pdf">
+                <button onclick="downloadCSV()" id="downloadBtn" disabled>Download CSV</button>
+                <button onclick="clearTable()">Clear</button>
+            </div>
+        </div>
+
+        <div id="status" class="status loading">Select PDF to begin</div>
+
+        <div class="table-wrapper">
+            <table id="dataTable" style="display:none">
+                <thead>
+                    <tr>
+                        <th>AIR</th>
+                        <th>Gender</th>
+                        <th>Category</th>
+                        <th>College Code</th>
+                        <th>College Name</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+
+    </div>
+
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+"https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+let extractedData = [];
+
+document.getElementById("pdfFile").addEventListener("change", readPDF);
+
+async function readPDF(e){
+    const file = e.target.files[0];
+    if(!file) return;
+
+    document.getElementById("status").innerText="Reading PDF...";
+    const reader=new FileReader();
+
+    reader.onload=async()=>{
+        try{
+            const pdf=await pdfjsLib.getDocument(new Uint8Array(reader.result)).promise;
+            let fullText="";
+
+            for(let i=1;i<=pdf.numPages;i++){
+                const page=await pdf.getPage(i);
+                const content=await page.getTextContent();
+                fullText+=content.items.map(i=>i.str).join(" ")+" ";
+            }
+            extractData(fullText);
+        }catch(err){
+            document.getElementById("status").innerText="PDF Error";
+            document.getElementById("status").className="error";
+            console.error(err);
+        }
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function extractData(text){
+    extractedData=[];
+    document.getElementById("tableBody").innerHTML="";
+    text=text.replace(/\s+/g," ").trim();
+
+    const pattern =
+    /(\d+)\s+[A-Z0-9]+\s+[A-Z0-9]+\s+[A-Z\s.]+?\s+(M|F)\s+([A-Z0-9\-\s()\/]+?)\s+(\d{3,4})\s*[:\-]?\s*(.+?)(?=\s+\d+\s+[A-Z0-9]+\s+[A-Z0-9]+|\s*$)/g;
+
+    let match;
+    while((match=pattern.exec(text))!==null){
+        extractedData.push({
+            air: match[1],
+            gender: match[2],
+            category: parseCategory(match[3]),
+            collegeCode: match[4],
+            collegeName: cleanCollegeName(match[5])
+        });
+    }
+
+    if(extractedData.length===0){
+        document.getElementById("status").innerText="No data found";
+        document.getElementById("status").className="error";
+        return;
+    }
+
+    extractedData.sort((a,b)=>a.air-b.air);
+
+    extractedData.forEach(r=>{
+        const tr=document.createElement("tr");
+        tr.innerHTML=`
+            <td>${r.air}</td>
+            <td>${r.gender}</td>
+            <td>${r.category}</td>
+            <td>${r.collegeCode}</td>
+            <td>${r.collegeName}</td>
+        `;
+        document.getElementById("tableBody").appendChild(tr);
+    });
+
+    document.getElementById("dataTable").style.display="table";
+    document.getElementById("downloadBtn").disabled=false;
+    document.getElementById("status").innerText=
+        `Extracted ${extractedData.length} records`;
+    document.getElementById("status").className="success";
+}
+
+/* ================= CATEGORY PARSER ================= */
+function parseCategory(text){
+    if(!text) return "OPEN";
+    text = text.toUpperCase();
+
+    text = text.replace(/QUOTA|MIN|I\.Q\.|INSTITUTE|EMD|EMR|MKB/g,"");
+
+    const baseCategories = [
+        "OBC","EWS","SEBC","SOBC","SC","ST",
+        "VJA","NTB","NTC","NTD","OPEN","PWD"
+    ];
+
+    let base="OPEN";
+    for(let b of baseCategories){
+        if(text.includes(b)){ base=b; break; }
+    }
+
+    const modifiers=[];
+    if(text.includes("HA")) modifiers.push("HA");
+    if(text.includes("D1")) modifiers.push("D1");
+    if(text.includes("D2")) modifiers.push("D2");
+    if(text.includes("D3")) modifiers.push("D3");
+    if(text.includes("ORP-C")) modifiers.push("ORP-C");
+    if(text.includes("PWD")) modifiers.push("PWD");
+
+    return modifiers.length ? `${base} ${modifiers.join(" ")}` : base;
+}
+
+/* ================= COLLEGE NAME CLEANER ================= */
+function cleanCollegeName(name){
+    let cleaned = name
+        .replace(/\s+/g," ")
+        .replace(/\bM C\b/g,"MC")
+        .replace(/\bM U M B A I\b/g,"MUMBAI")
+        .trim();
+
+    const stopWords = [
+        "G OVERNMENT OF MAHARASHTRA",
+        "STATE COMMON ENTRANCE TEST CELL",
+        "ADMISSIONS TO HEALTH SCIENCE COURSES",
+        "NEET",
+        "PROVISIONAL SELECTION LIST",
+        "PRINTED ON",
+        "LEGENDS",
+        "(No Pref.)",
+        "(Ret.)",
+        "(No Change)",
+        "AIR:"
+    ];
+
+    for(let stop of stopWords){
+        const idx = cleaned.indexOf(stop);
+        if(idx !== -1){
+            cleaned = cleaned.substring(0, idx).trim();
+        }
+    }
+    return cleaned;
+}
+
+function downloadCSV(){
+    let csv="AIR,Gender,Category,College Code,College Name\n";
+    extractedData.forEach(r=>{
+        csv+=`${r.air},${r.gender},${r.category},${r.collegeCode},"${r.collegeName}"\n`;
+    });
+    const blob=new Blob([csv],{type:"text/csv"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="neet_cap_data.csv";
+    a.click();
+}
+
+function clearTable(){
+    extractedData=[];
+    document.getElementById("tableBody").innerHTML="";
+    document.getElementById("dataTable").style.display="none";
+    document.getElementById("status").innerText="Select PDF to begin";
+    document.getElementById("status").className="loading";
+    document.getElementById("downloadBtn").disabled=true;
+    document.getElementById("pdfFile").value="";
+}
+</script>
+
+</body>
+</html>
