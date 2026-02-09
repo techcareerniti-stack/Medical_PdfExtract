@@ -107,12 +107,13 @@ button:disabled{
 .table-wrapper{
     width:100%;
     overflow-x:auto;
+    margin-top:10px;
 }
 
 table{
     width:100%;
     border-collapse:collapse;
-    min-width:700px;
+    min-width:600px;
 }
 
 th,td{
@@ -158,6 +159,7 @@ tr:nth-child(even){
     }
 }
 </style>
+<base target="_blank">
 </head>
 
 <body>
@@ -166,6 +168,7 @@ tr:nth-child(even){
 
     <div class="header">
         <h2>Medical PDF Extractor</h2>
+        <p style="color:#666;font-size:14px;margin-top:5px;">Extracts and filters NEET CAP data | Removes records without college assignments</p>
     </div>
 
     <div class="card">
@@ -212,6 +215,8 @@ async function readPDF(e){
     if(!file) return;
 
     document.getElementById("status").innerText="Reading PDF...";
+    document.getElementById("status").className="loading";
+    
     const reader=new FileReader();
 
     reader.onload=async()=>{
@@ -226,7 +231,7 @@ async function readPDF(e){
             }
             extractData(fullText);
         }catch(err){
-            document.getElementById("status").innerText="PDF Error";
+            document.getElementById("status").innerText="PDF Error: " + err.message;
             document.getElementById("status").className="error";
             console.error(err);
         }
@@ -237,36 +242,73 @@ async function readPDF(e){
 function extractData(text){
     extractedData=[];
     document.getElementById("tableBody").innerHTML="";
+
+    // Normalize whitespace but preserve newlines for line-by-line parsing
     text=text.replace(/\s+/g," ").trim();
 
-    const pattern =
-    /(\d+)\s+[A-Z0-9]+\s+[A-Z0-9]+\s+[A-Z\s.]+?\s+(M|F)\s+([A-Z0-9\-\s()\/]+?)\s+(\d{3,4})\s*[:\-]?\s*(.+?)(?=\s+\d+\s+[A-Z0-9]+\s+[A-Z0-9]+|\s*$)/g;
+    // Split into lines and process each line
+    const lines = text.split(/(?=\d+\s+\d+\s+\d{10}\s+\d{9})/);
 
-    let match;
-    while((match=pattern.exec(text))!==null){
-        extractedData.push({
-            air: match[1],
-            gender: match[2],
-            category: parseCategory(match[3]),
-            collegeCode: match[4],
-            collegeName: cleanCollegeName(match[5])
-        });
+    let totalRecords = 0;
+
+    for(let line of lines){
+        line = line.trim();
+        if(!line) continue;
+
+        const result = extractFromLine(line);
+        if(result){
+            totalRecords++;
+            
+            // Clean up category
+            let cleanCategory = result.category.replace(/\s+ORPHAN.*$/i, "").trim();
+
+            // Fix concatenated categories like "SEBCORP-C" -> "SEBC ORP-C"
+            // Includes ORP-A, ORP-B, ORP-C
+            cleanCategory = cleanCategory.replace(/\b(SEBC|SOBC|OBC|SC|ST|EWS|VJA|NTB|NTC|NTD|OPEN)(ORP-[A-C]|ORP-B|ORP)\b/g, "$1 $2");
+            
+            // Fix concatenated modifiers like "SEBCHA" -> "SEBC HA"
+            cleanCategory = cleanCategory.replace(/\b(SEBC|SOBC|OBC|SC|ST|EWS|VJA|NTB|NTC|NTD|OPEN)(HA|W|D1|D2|D3|IQ|I\.Q\.|PWD|PH|EMD|EMR)\b/gi, "$1 $2");
+
+            // Parse category
+            const parsedCategory = parseCategory(cleanCategory);
+
+            // Clean college name
+            const collegeName = cleanCollegeName(result.college_name);
+            const collegeCode = result.college_code || "";
+
+            // Check if college is valid (skip if not)
+            if(!hasValidCollege(collegeName, collegeCode)) {
+                continue;
+            }
+            
+            extractedData.push({
+                air: result.air,
+                name: result.name,
+                gender: result.gender,
+                category: parsedCategory,
+                rawCategory: cleanCategory,
+                collegeCode: collegeCode,
+                collegeName: collegeName
+            });
+        }
     }
 
     if(extractedData.length===0){
-        document.getElementById("status").innerText="No data found";
+        document.getElementById("status").innerText="No data found. Please check PDF format.";
         document.getElementById("status").className="error";
         return;
     }
 
-    extractedData.sort((a,b)=>a.air-b.air);
+    // Sort by AIR
+    extractedData.sort((a,b)=>parseInt(a.air)-parseInt(b.air));
 
-    extractedData.forEach(r=>{
+    // Display data
+    extractedData.forEach((r, index)=>{
         const tr=document.createElement("tr");
         tr.innerHTML=`
-            <td>${r.air}</td>
+            <td><strong>${r.air}</strong></td>
             <td>${r.gender}</td>
-            <td>${r.category}</td>
+            <td title="Raw: ${r.rawCategory}">${r.category}</td>
             <td>${r.collegeCode}</td>
             <td>${r.collegeName}</td>
         `;
@@ -275,81 +317,278 @@ function extractData(text){
 
     document.getElementById("dataTable").style.display="table";
     document.getElementById("downloadBtn").disabled=false;
-    document.getElementById("status").innerText=
-        `Extracted ${extractedData.length} records`;
+    document.getElementById("status").innerText=`Extracted ${extractedData.length} records successfully!`;
     document.getElementById("status").className="success";
 }
 
-/* ================= CATEGORY PARSER ================= */
-function parseCategory(text){
-    if(!text) return "OPEN";
-    text = text.toUpperCase();
-
-    text = text.replace(/QUOTA|MIN|I\.Q\.|INSTITUTE|EMD|EMR|MKB/g,"");
-
-    const baseCategories = [
-        "OBC","EWS","SEBC","SOBC","SC","ST",
-        "VJA","NTB","NTC","NTD","OPEN","PWD"
+function hasValidCollege(collegeName, collegeCode) {
+    if (!collegeName || collegeName.trim() === "") return false;
+    
+    const upperName = collegeName.toUpperCase();
+    const invalidPatterns = [
+        "CHOICE NOT AVAILABLE",
+        "NOT AVAILABLE",
+        "NOT PROVIDED",
+        "NO COLLEGE",
+        "N/A",
+        "NIL",
+        "NULL",
+        "---",
+        "--",
+        "TO BE ALLOTTED",
+        "NOT ALLOTTED",
+        "NOT ASSIGNED"
     ];
+    
+    for (let pattern of invalidPatterns) {
+        if (upperName.includes(pattern)) return false;
+    }
+    
+    // Check if it's just numbers or special characters
+    if (upperName.replace(/[^A-Z]/g, '').length < 2) return false;
+    
+    // Check college code
+    if (collegeCode) {
+        const code = collegeCode.trim();
+        if (code === "" || code === "0" || code === "000" || code === "N/A") return false;
+    }
+    
+    return true;
+}
 
-    let base="OPEN";
-    for(let b of baseCategories){
-        if(text.includes(b)){ base=b; break; }
+function extractFromLine(line){
+    // Parse a single line of PDF data
+    const parts = line.trim().split(/\s+/);
+
+    // Find all numbers and their positions
+    const numbers = [];
+    for(let i=0; i<parts.length; i++){
+        if(/^\d+$/.test(parts[i])){
+            numbers.push({pos: i, num: parts[i], len: parts[i].length});
+        }
     }
 
-    const modifiers=[];
-    if(text.includes("HA")) modifiers.push("HA");
-    if(text.includes("D1")) modifiers.push("D1");
-    if(text.includes("D2")) modifiers.push("D2");
-    if(text.includes("D3")) modifiers.push("D3");
-    if(text.includes("ORP-C")) modifiers.push("ORP-C");
-    if(text.includes("PWD")) modifiers.push("PWD");
+    // Need at least 4 numbers: Serial, AIR, NEET(10), Form(9)
+    if(numbers.length < 4) return null;
 
-    return modifiers.length ? `${base} ${modifiers.join(" ")}` : base;
+    // Find NEET roll (10 digits) and Form (9 digits)
+    let neetIdx = -1;
+    let formIdx = -1;
+
+    for(let i=0; i<numbers.length; i++){
+        if(numbers[i].len === 10 && neetIdx === -1){
+            neetIdx = i;
+        } else if(numbers[i].len === 9 && formIdx === -1 && neetIdx !== -1 && i > neetIdx){
+            formIdx = i;
+            break;
+        }
+    }
+
+    if(neetIdx === -1 || formIdx === -1) return null;
+
+    // Get Serial and AIR (numbers before NEET)
+    const serial = neetIdx >= 2 ? numbers[neetIdx-2].num : "";
+    const air = neetIdx >= 1 ? numbers[neetIdx-1].num : "";
+    const neet = numbers[neetIdx].num;
+    const form = numbers[formIdx].num;
+
+    // Find Gender (M or F) after Form number
+    let gender = "";
+    let genderPos = -1;
+
+    for(let i=numbers[formIdx].pos+1; i<parts.length; i++){
+        if(parts[i] === "M" || parts[i] === "F"){
+            gender = parts[i];
+            genderPos = i;
+            break;
+        }
+    }
+
+    if(genderPos === -1) return null;
+
+    // Name is between Form number and Gender
+    const nameParts = parts.slice(numbers[formIdx].pos+1, genderPos);
+    const name = nameParts.join(" ");
+
+    // Find College Code (pattern: 3-4 digits followed by colon)
+    let collegeCode = "";
+    let collegeName = "";
+    let collegePos = -1;
+
+    for(let i=genderPos+1; i<parts.length; i++){
+        const match = parts[i].match(/^(\d{3,4}):(.*)/);
+        if(match){
+            collegeCode = match[1];
+            collegeName = match[2];
+            collegePos = i;
+            break;
+        }
+    }
+
+    // Category is between Gender and College Code
+    let category = "";
+    if(collegePos !== -1){
+        const catParts = parts.slice(genderPos+1, collegePos);
+        category = catParts.join(" ");
+
+        // Get rest of college name
+        if(collegePos < parts.length - 1){
+            collegeName += " " + parts.slice(collegePos+1).join(" ");
+        }
+    } else {
+        // No college code found, take rest as category
+        const catParts = parts.slice(genderPos+1);
+        category = catParts.join(" ");
+    }
+
+    return{
+        sr: serial,
+        air: air,
+        neet: neet,
+        form: form,
+        name: name,
+        gender: gender,
+        category: category,
+        college_code: collegeCode,
+        college_name: collegeName
+    };
+}
+
+/* ================= ENHANCED CATEGORY PARSER ================= */
+function parseCategory(text){
+    if(!text) return "OPEN";
+
+    text = text.toUpperCase().trim();
+    
+    // Additional fixes for concatenated patterns
+    text = text.replace(/\b(SEBC|SOBC|OBC|SC|ST|EWS|VJA|NTB|NTC|NTD|OPEN)(HA|W|D1|D2|D3|IQ|I\.Q\.|PWD|PH|EMD|EMR)\b/gi, "$1 $2");
+    
+    // Direct matches for common patterns
+    const directMatches = {
+        "OBC HA": "OBC HA", "OBC W": "OBC W", "OBC D1": "OBC D1", "OBC D2": "OBC D2", "OBC D3": "OBC D3",
+        "SC HA": "SC HA", "SC W": "SC W", "SC D1": "SC D1", "SC D2": "SC D2", "SC D3": "SC D3",
+        "ST HA": "ST HA", "ST W": "ST W", "ST D1": "ST D1", "ST D2": "ST D2", "ST D3": "ST D3",
+        "SEBC HA": "SEBC HA", "SEBC W": "SEBC W", "SEBC D1": "SEBC D1", "SEBC D2": "SEBC D2", "SEBC D3": "SEBC D3",
+        "SOBC HA": "SOBC HA", "SOBC W": "SOBC W", "SOBC D1": "SOBC D1", "SOBC D2": "SOBC D2", "SOBC D3": "SOBC D3",
+        "EWS HA": "EWS HA", "EWS W": "EWS W", "EWS D1": "EWS D1", "EWS D2": "EWS D2", "EWS D3": "EWS D3",
+        "VJA HA": "VJA HA", "VJA W": "VJA W", "VJA D1": "VJA D1", "VJA D2": "VJA D2", "VJA D3": "VJA D3",
+        "OPEN HA": "OPEN HA", "OPEN W": "OPEN W", "OPEN D1": "OPEN D1", "OPEN D2": "OPEN D2", "OPEN D3": "OPEN D3",
+        "OBC ORP-A": "OBC ORP-A", "OBC ORP-B": "OBC ORP-B", "OBC ORP-C": "OBC ORP-C", "OBC ORP": "OBC ORP",
+        "SC ORP-A": "SC ORP-A", "SC ORP-B": "SC ORP-B", "SC ORP-C": "SC ORP-C", "SC ORP": "SC ORP",
+        "ST ORP-A": "ST ORP-A", "ST ORP-B": "ST ORP-B", "ST ORP-C": "ST ORP-C", "ST ORP": "ST ORP",
+        "SEBC ORP-A": "SEBC ORP-A", "SEBC ORP-B": "SEBC ORP-B", "SEBC ORP-C": "SEBC ORP-C", "SEBC ORP": "SEBC ORP",
+        "SOBC ORP-A": "SOBC ORP-A", "SOBC ORP-B": "SOBC ORP-B", "SOBC ORP-C": "SOBC ORP-C", "SOBC ORP": "SOBC ORP",
+        "NTC ORP-A": "NTC ORP-A", "NTC ORP-B": "NTC ORP-B", "NTC ORP-C": "NTC ORP-C", "NTC ORP": "NTC ORP",
+        "NTB ORP-A": "NTB ORP-A", "NTB ORP-B": "NTB ORP-B", "NTB ORP-C": "NTB ORP-C", "NTB ORP": "NTB ORP",
+        "NTD ORP-A": "NTD ORP-A", "NTD ORP-B": "NTD ORP-B", "NTD ORP-C": "NTD ORP-C", "NTD ORP": "NTD ORP",
+        "VJA ORP-A": "VJA ORP-A", "VJA ORP-B": "VJA ORP-B", "VJA ORP-C": "VJA ORP-C", "VJA ORP": "VJA ORP",
+        "EWS ORP-A": "EWS ORP-A", "EWS ORP-B": "EWS ORP-B", "EWS ORP-C": "EWS ORP-C", "EWS ORP": "EWS ORP",
+        "OPEN ORP-A": "OPEN ORP-A", "OPEN ORP-B": "OPEN ORP-B", "OPEN ORP-C": "OPEN ORP-C", "OPEN ORP": "OPEN ORP",
+        "ORP-A": "OPEN ORP-A", "ORP-B": "OPEN ORP-B", "ORP-C": "OPEN ORP-C", "ORP": "OPEN ORP"
+    };
+
+    // Clean up the text
+    let cleanText = text.replace(/\(W\)/g, " W").replace(/\(EMD\)/g, " EMD").replace(/\(EMR\)/g, " EMR");
+    cleanText = cleanText.replace(/\s+/g, " ").trim();
+
+   
+    // Token-based parsing for other cases
+    const tokens = cleanText.split(/\s+/);
+    let baseCategory = null;
+    const categoryPriority = ["SOBC", "SEBC", "OBC", "SC", "ST", "EWS", "VJA", "NTB", "NTC", "NTD", "NRI", "OPEN"];
+
+    for(const cat of categoryPriority){
+        if(tokens.includes(cat) || cleanText.includes(cat)){
+            if(cat === "OBC" && (cleanText.includes("SOBC") || cleanText.includes("SEBC"))) continue;
+            baseCategory = cat;
+            break;
+        }
+    }
+
+    if(!baseCategory) baseCategory = "OPEN";
+
+    // Extract modifiers
+    const modifiers = [];
+
+    if(tokens.includes("ORP-A") || cleanText.includes("ORP-A")) modifiers.push("ORP-A");
+    else if(tokens.includes("ORP-B") || cleanText.includes("ORP-B")) modifiers.push("ORP-B");
+    else if(tokens.includes("ORP-C") || cleanText.includes("ORP-C")) modifiers.push("ORP-C");
+    else if(tokens.includes("ORP") || cleanText.includes("ORP")) modifiers.push("ORP");
+
+    if(tokens.includes("HA")) modifiers.push("HA");
+    if(tokens.includes("I.Q.") || tokens.includes("IQ")) modifiers.push("I.Q.");
+    if(tokens.includes("D1")) modifiers.push("D1");
+    if(tokens.includes("D2")) modifiers.push("D2");
+    if(tokens.includes("D3")) modifiers.push("D3");
+    if(tokens.includes("PWD") || tokens.includes("PH")) modifiers.push("PWD");
+ 
+    // Sort and join
+    const orderMap = {
+        "ORP-A":1, "ORP-B":2, "ORP-C":3, "ORP":4,
+        "HA":5, "W":6, "I.Q.":7, 
+        "D1":8, "D2":9, "D3":10, 
+        "EMD":11, "EMR":12, "PWD":13
+    };
+    
+    const uniqueModifiers = [...new Set(modifiers)].sort((a,b)=>(orderMap[a]||99)-(orderMap[b]||99));
+
+    let result = baseCategory;
+    if(uniqueModifiers.length > 0){
+        result += " " + uniqueModifiers.join(" ");
+    }
+
+    return result;
 }
 
 /* ================= COLLEGE NAME CLEANER ================= */
 function cleanCollegeName(name){
-    let cleaned = name
-        .replace(/\s+/g," ")
-        .replace(/\bM C\b/g,"MC")
-        .replace(/\bM U M B A I\b/g,"MUMBAI")
-        .trim();
+    if(!name) return "";
+
+    let cleaned = name.replace(/\s+/g, " ")
+                     .replace(/\bM C\b/g, "MC")
+                     .replace(/\bG M C\b/g, "GMC")
+                     .replace(/\bG DC\b/g, "GDC")
+                     .trim();
 
     const stopWords = [
-        "G OVERNMENT OF MAHARASHTRA",
-        "STATE COMMON ENTRANCE TEST CELL",
-        "ADMISSIONS TO HEALTH SCIENCE COURSES",
-        "NEET",
-        "PROVISIONAL SELECTION LIST",
-        "PRINTED ON",
-        "LEGENDS",
-        "(No Pref.)",
-        "(No Pref)",
-        "(No",
-        "(Ret.)",
-        "(No Change)",
-        "AIR:"
+        "G OVERNMENT OF MAHARASHTRA", "ORPHANC", "ORPHAN", "(No Pref)", "(No", 
+        "(Ret.)", "(No Change)", "STATE COMMON ENTRANCE", "ADMISSIONS TO HEALTH", 
+        "NEET(UG)", "PROVISIONAL SELECTION", "PRINTED ON", "LEGENDS", "AIR:", 
+        "Cat:", "Choice Not Available", "Not Available", "Not Provided", 
+        "No College", "N/A", "NIL", "NULL", "---", "--", "TO BE ALLOTTED",
+        "NOT ALLOTTED", "NOT ASSIGNED", "GOVT.", "GOVERNMENT"
     ];
 
     for(let stop of stopWords){
-        const idx = cleaned.indexOf(stop);
+        const idx = cleaned.toUpperCase().indexOf(stop.toUpperCase());
         if(idx !== -1){
             cleaned = cleaned.substring(0, idx).trim();
         }
     }
+
+    // Remove trailing special characters and numbers
+    cleaned = cleaned.replace(/[\s\-–—]+$/, "");
+    cleaned = cleaned.replace(/\s+\d+\s*$/, "");
+    
     return cleaned;
 }
 
 function downloadCSV(){
+    if(extractedData.length === 0) {
+        alert("No data to download!");
+        return;
+    }
+
     let csv="AIR,Gender,Category,College Code,College Name\n";
-    extractedData.forEach(r=>{
-        csv+=`${r.air},${r.gender},${r.category},${r.collegeCode},"${r.collegeName}"\n`;
+    extractedData.forEach((r, i)=>{
+        csv+=`${r.air},${r.gender},"${r.category}",${r.collegeCode},"${r.collegeName}"\n`;
     });
-    const blob=new Blob([csv],{type:"text/csv"});
+
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
     const a=document.createElement("a");
+    const timestamp = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
     a.href=URL.createObjectURL(blob);
-    a.download="neet_cap_data.csv";
+    a.download=`neet_cap_data_${timestamp}.csv`;
     a.click();
 }
 
